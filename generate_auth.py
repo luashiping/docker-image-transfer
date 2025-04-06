@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 import json
 import os
 import sys
@@ -69,7 +69,7 @@ def main():
     # 解析命令行参数
     if "--help" in sys.argv:
         print("""用法：
-python3 generate_auth.py [选项] [registry_url]
+python generate_auth.py [选项] [registry_url]
 
 选项：
   --copy-docker   直接复制 ~/.docker/config.json 的内容
@@ -78,10 +78,10 @@ python3 generate_auth.py [选项] [registry_url]
   registry_url    可选，指定镜像仓库地址（默认：registry.cn-hangzhou.aliyuncs.com）
 
 示例：
-  python3 generate_auth.py                    # 交互式创建新的认证文件
-  python3 generate_auth.py --copy-docker      # 复制现有的 Docker 认证
-  python3 generate_auth.py --merge            # 添加新的认证信息到现有文件
-  python3 generate_auth.py --view             # 查看当前认证信息
+  python generate_auth.py                    # 交互式创建新的认证文件
+  python generate_auth.py --copy-docker      # 复制现有的 Docker 认证
+  python generate_auth.py --merge            # 添加新的认证信息到现有文件
+  python generate_auth.py --view             # 查看当前认证信息
 """)
         sys.exit(0)
 

@@ -1,10 +1,63 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 import yaml
 import subprocess
 import sys
 import os
 import argparse
-import shlex
+from pathlib import Path
+
+def read_env_file(env_file_path):
+    """
+    Read environment variables from .env file
+    
+    Args:
+        env_file_path (str): Path to .env file
+    
+    Returns:
+        dict: Environment variables
+    """
+    env_vars = {}
+    if os.path.exists(env_file_path):
+        with open(env_file_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    key, value = line.split('=', 1)
+                    env_vars[key.strip()] = value.strip().strip('"').strip("'")
+    return env_vars
+
+def resolve_image_var(image_value, env_vars):
+    """
+    Resolve environment variables in image value
+    
+    Args:
+        image_value (str): Image value from compose file
+        env_vars (dict): Environment variables
+    
+    Returns:
+        str: Resolved image value
+    """
+    if not image_value or not isinstance(image_value, str):
+        return image_value
+        
+    # Handle ${VAR} and ${VAR:-default} formats
+    if image_value.startswith('${') and image_value.endswith('}'):
+        var_expr = image_value[2:-1]
+        
+        # Check if there's a default value
+        if ':-' in var_expr:
+            var_name, default_value = var_expr.split(':-', 1)
+        else:
+            var_name = var_expr
+            default_value = image_value  # Keep original if no value found
+            
+        # First try env_vars from .env file
+        if var_name in env_vars:
+            return env_vars[var_name]
+        # Then try system environment variables
+        return os.environ.get(var_name, default_value)
+    
+    return image_value
 
 def read_compose_file(file_path):
     """Read and parse docker-compose file."""
@@ -12,20 +65,42 @@ def read_compose_file(file_path):
         print(f"Error: {file_path} does not exist")
         sys.exit(1)
         
+    # Look for .env file in the same directory as the compose file
+    env_file_path = os.path.join(os.path.dirname(file_path), '.env')
+    env_vars = read_env_file(env_file_path)
+    
     with open(file_path, 'r') as f:
         try:
             compose_data = yaml.safe_load(f)
-            return compose_data
+            
+            # Handle 'include' directive
+            if 'include' in compose_data:
+                includes = compose_data['include']
+                if isinstance(includes, str):
+                    includes = [includes]
+                for include in includes:
+                    include_path = os.path.join(os.path.dirname(file_path), include)
+                    if os.path.exists(include_path):
+                        with open(include_path, 'r') as inc_f:
+                            include_data = yaml.safe_load(inc_f)
+                            # Merge services
+                            if 'services' in include_data:
+                                if 'services' not in compose_data:
+                                    compose_data['services'] = {}
+                                compose_data['services'].update(include_data['services'])
+            
+            return compose_data, env_vars
         except yaml.YAMLError as e:
             print(f"Error parsing docker-compose file: {e}")
             sys.exit(1)
 
-def extract_images(compose_data, include_profiles=False):
+def extract_images(compose_data, env_vars, include_profiles=False):
     """
     Extract image references from compose data.
     
     Args:
         compose_data (dict): The parsed docker-compose data
+        env_vars (dict): Environment variables
         include_profiles (bool): Whether to include services with profiles
     
     Returns:
@@ -45,31 +120,34 @@ def extract_images(compose_data, include_profiles=False):
         if profiles and not include_profiles:
             continue
             
-        images.append((service['image'], service_name, profiles))
+        # Resolve environment variables in image value
+        image_value = resolve_image_var(service['image'], env_vars)
+        if not image_value:
+            print(f"Warning: Could not resolve image value for service '{service_name}'")
+            continue
+            
+        images.append((image_value, service_name, profiles))
     
     return images
 
 def get_skopeo_command():
     """
-    Get the appropriate skopeo command based on authentication method.
+    Get the skopeo command with authentication configuration.
+    Requires auth.json file to be present in the current directory.
     Returns the base command as a list of arguments.
     """
-    # Check if auth.json exists in current directory
-    if os.path.exists('auth.json'):
-        return [
-            "docker", "run", "--rm",
-            "-v", f"{os.getcwd()}/auth.json:/root/.docker/config.json:ro",
-            "--net=host",
-            "quay.io/skopeo/stable:latest"
-        ]
-    else:
-        # Use local Docker authentication
-        return [
-            "docker", "run", "--rm",
-            "-v", f"{os.path.expanduser('~')}/.docker:/root/.docker:ro",
-            "--net=host",
-            "quay.io/skopeo/stable:latest"
-        ]
+    if not os.path.exists('auth.json'):
+        print("错误：未找到认证文件")
+        print("请使用以下命令创建认证文件：")
+        print("python generate_auth.py")
+        sys.exit(1)
+    
+    return [
+        "docker", "run", "--rm",
+        "-v", f"{os.getcwd()}/auth.json:/root/.docker/config.json:ro",
+        "--net=host",
+        "quay.io/skopeo/stable:latest"
+    ]
 
 def process_image_name(image_name, target_registry):
     """
@@ -148,8 +226,8 @@ def main():
         print("Error: Docker command not found. Please make sure Docker is installed.")
         sys.exit(1)
     
-    compose_data = read_compose_file(args.compose_file)
-    images = extract_images(compose_data, args.all_profiles)
+    compose_data, env_vars = read_compose_file(args.compose_file)
+    images = extract_images(compose_data, env_vars, args.all_profiles)
     
     if not images:
         print("No images found in the compose file" + 

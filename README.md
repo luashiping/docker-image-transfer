@@ -1,123 +1,163 @@
 # Docker Image Transfer Tool
 
-这个工具用于将 docker-compose 文件中的镜像批量转移到阿里云容器镜像服务。
+一个用于在不同 Docker 镜像仓库之间批量转移镜像的工具。支持从 docker-compose.yml 文件中读取镜像列表，并自动将镜像转移到目标仓库，同时保持原有的组织/项目结构。
 
-## 前置条件
+#### 功能特点
 
-1. 安装 Python 3.6 或更高版本
-2. 安装 Docker（如果使用推荐的 Docker 方式运行 skopeo）或安装 skopeo
-3. 安装所需的 Python 依赖
+- 自动读取docker-compose.yml文件中的所有镜像地址
+- 支持环境变量解析（如 ${IMAGE_NAME}）
+- 支持compose文件的include指令，可以合并多个compose文件
+- 默认只处理没有 profiles 的服务镜像
+- 可以通过 --all-profiles (-a) 参数选择处理所有镜像
+- 自动将镜像转移到指定的容器镜像仓库
+- 在执行转移前会显示详细的镜像列表和目标仓库并请求确认
+- 提供自动化的认证文件生成工具，支持多账号配置
 
-## 安装
+#### 安装说明
 
-1. 配置 skopeo：
-
-推荐方式 - 使用 Docker 运行 skopeo（避免版本依赖问题）：
-在你的 shell 配置文件（如 ~/.bashrc 或 ~/.zshrc）中添加以下别名之一：
-
-方式一 - 使用本地 Docker 认证（推荐）：
-```bash
-# 在 Linux/macOS 中添加以下内容到 ~/.bashrc 或 ~/.zshrc
-alias skopeo='docker run --rm -it -v ${PWD}:/work:z -v ${HOME}/.docker:/root/.docker:ro -w /work --net=host quay.io/skopeo/stable:latest'
-```
-
-方式二 - 使用独立认证文件：
-```bash
-# 在 Linux/macOS 中添加以下内容到 ~/.bashrc 或 ~/.zshrc
-alias skopeo='docker run --rm -it -v ${PWD}:/work:z -v ${PWD}/auth.json:/root/.docker/config.json:ro -w /work --net=host quay.io/skopeo/stable:latest'
-```
-
-添加后执行以下命令使配置生效：
-```bash
-source ~/.bashrc  # 如果使用 bash
-# 或
-source ~/.zshrc   # 如果使用 zsh
-```
-
-替代方式 - 直接安装 skopeo：
-```bash
-# macOS
-brew install skopeo
-
-# Ubuntu
-sudo apt-get install skopeo
-```
-注意：直接安装可能会遇到版本兼容性问题，建议使用 Docker 方式。
-
-2. 安装 Python 依赖：
+1. 安装依赖：
 ```bash
 pip install -r requirements.txt
 ```
 
-## 使用方法
+2. 配置镜像仓库认证：
 
-1. 配置镜像仓库认证（选择以下任一方式）：
+工具使用 auth.json 文件进行认证。在使用工具之前，需要先创建认证文件：
 
-方式一 - 使用本地 Docker 认证（推荐）：
 ```bash
-# Docker 登录（如果还没有登录过）
-docker login registry.cn-hangzhou.aliyuncs.com
+# 创建认证文件（需要指定目标镜像仓库地址）
+python generate_auth.py registry.cn-hangzhou.aliyuncs.com
 
-# 登录信息会自动从 ~/.docker/config.json 读取
-# 如果需要使用 skopeo 重新登录，执行：
-skopeo login registry.cn-hangzhou.aliyuncs.com
+# 查看当前认证信息
+python generate_auth.py --view
+
+# 添加更多仓库认证信息
+python generate_auth.py --merge registry.example.com
 ```
 
-方式二 - 使用独立认证文件：
+注意：认证文件默认会保存在当前目录下的 auth.json 中。
 
-使用提供的 `generate_auth.py` 脚本生成认证文件：
+#### 使用说明
 
-```bash
-# 1. 直接复制现有的 Docker 认证信息（如果已经用 docker login 登录过）
-python3 generate_auth.py --copy-docker
+1. 准备配置文件：
 
-# 2. 创建新的认证信息（不会影响现有的 Docker 登录）
-python3 generate_auth.py
+a. 支持 include 指令的 compose 文件示例：
 
-# 3. 添加新的认证信息到现有的 auth.json（用于多账号认证）
-python3 generate_auth.py --merge
+```yaml
+include:
+  - ./docker-compose-base.yml  # 包含基础配置
+  - ./docker-compose-dev.yml   # 包含开发环境配置
 
-# 4. 指定其他镜像仓库地址
-python3 generate_auth.py registry.example.com
-
-# 查看更多用法：
-python3 generate_auth.py --help
+services:
+  web:
+    image: nginx:latest
+  mysql:
+    image: ${MYSQL_IMAGE}
 ```
 
-2. 运行脚本：
+docker-compose-base.yml（基础配置文件）：
+```yaml
+version: '3.8'
+
+services:
+  ghost:
+    image: ${GHOST_IMAGE:-ghost:5-alpine}
+    ports:
+      - "2368:2368"
+    environment:
+      - url=http://localhost:2368
+    depends_on:
+      - mysql
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-secret}
+```
+
+docker-compose-dev.yml（开发环境配置文件）：
+```yaml
+version: '3.8'
+
+services:
+  adminer:
+    image: adminer:4.8.1
+    profiles: ["dev"]
+    ports:
+      - "8080:8080"
+```
+
+b. .env 文件示例（可选，用于环境变量）：
 ```bash
-# 默认只处理没有 profiles 的服务镜像，使用默认目标仓库
-python3 image_transfer.py docker-compose.yml
+MYSQL_IMAGE=mysql:8.0.28
+GHOST_IMAGE=ghost:5.71-alpine
+```
+
+使用这些配置文件时，工具会：
+- 自动读取所有包含的文件中的镜像
+- 正确处理环境变量
+- 根据`--all-profiles`参数决定是否处理带有 profiles 的服务镜像
+
+1. 运行脚本：
+```bash
+# 基本用法（必须指定目标仓库）
+python image_transfer.py docker-compose.yml --target-registry registry.example.com/myproject
 
 # 处理所有镜像，包括带有 profiles 的服务
-python3 image_transfer.py docker-compose.yml --all-profiles
-
-# 指定目标仓库
-python3 image_transfer.py docker-compose.yml --target-registry registry.example.com/myproject
-
-# 使用简短参数形式
-python3 image_transfer.py docker-compose.yml -t registry.example.com/myproject -a
+python image_transfer.py docker-compose.yml -t registry.example.com/myproject -a
 ```
 
-## 功能说明
+#### 环境变量解析
 
-- 自动读取 docker-compose.yml 文件中的所有镜像地址
-- 默认只处理没有 profiles 的服务镜像（通常是核心服务）
-- 可以通过 --all-profiles (-a) 参数选择处理所有镜像
-- 支持通过 --target-registry (-t) 参数指定目标镜像仓库
-- 保持原有的组织/项目结构
-- 自动将镜像转移到指定的容器镜像仓库
-- 显示转移进度和结果
-- 在执行转移前会显示详细的镜像列表和目标仓库并请求确认
-- 提供自动化的认证文件生成工具，支持多账号配置
+工具会按以下顺序解析镜像地址中的环境变量：
+1. 首先查找同目录下的 .env 文件
+2. 如果在 .env 文件中未找到，则查找系统环境变量
+3. 如果都未找到，将保持原始变量形式
 
-## 注意事项
+示例：
+```yaml
+# docker-compose.yml
+services:
+  api:
+    image: ${API_IMAGE:-default/api:latest}  # 支持默认值语法
+```
 
-- 确保有足够的磁盘空间用于临时存储镜像
-- 确保有阿里云容器镜像服务的访问权限
-- 建议在网络良好的环境下运行
-- 使用 Docker 方式运行 skopeo 时，确保当前目录可以被容器访问
-- 如果使用本地 Docker 认证，确保 ~/.docker/config.json 存在并有正确的权限
-- 如果使用独立认证文件，确保 auth.json 文件权限为 600（chmod 600 auth.json）
-- 注意不要将包含认证信息的 auth.json 提交到代码仓库
-- 建议将 auth.json 添加到 .gitignore 文件中
+```bash
+# .env
+API_IMAGE=myregistry.com/api:v1.0
+```
+
+#### 认证文件生成
+
+使用 `generate_auth.py` 脚本可以方便地生成和管理认证信息：
+
+```bash
+# 创建新的认证信息
+python generate_auth.py registry_url
+
+# 合并多个认证信息
+python generate_auth.py --merge registry_url
+
+# 查看当前认证信息
+python generate_auth.py --view
+```
+
+---
+
+## 单个镜像转移：
+
+如果只需要转移单个镜像，可以设置`skopeo`别名：
+
+```bash
+# 设置别名（根据实际 auth.json 位置调整路径）
+echo 'alias skopeo-copy="docker run --rm -it -v ~/.docker/auth.json:/root/.docker/config.json:ro --net=host quay.io/skopeo/stable:latest copy --dest-authfile /root/.docker/config.json"' >> ~/.zshrc
+source ~/.zshrc   # 如果使用 zsh
+# 或
+echo 'alias skopeo-copy="docker run --rm -it -v ~/.docker/auth.json:/root/.docker/config.json:ro --net=host quay.io/skopeo/stable:latest copy --dest-authfile /root/.docker/config.json"' >> ~/.bashrc
+source ~/.bashrc  # 如果使用 bash
+
+# 使用示例
+skopeo-copy docker://source-registry.com/image:tag docker://target-registry.com/image:tag
+
+skopeo-copy docker://redis:5.0.14 docker://registry.cn-hangzhou.aliyuncs.com/luashiping/redis:5.0.14
+```
